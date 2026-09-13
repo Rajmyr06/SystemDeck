@@ -4,6 +4,7 @@ import Foundation
 @MainActor
 final class SystemMonitorStore: ObservableObject {
     @Published var cpuUsage: Double = 0
+    @Published var cpuCores: [CoreCPUMetric] = []
     @Published var gpu = GPUMetric()
     @Published var memory = MemoryMetric()
     @Published var memoryPressure = MemoryPressureMetric()
@@ -22,6 +23,7 @@ final class SystemMonitorStore: ObservableObject {
     @Published var downloadHistory: [MetricSample] = []
     @Published var uploadHistory: [MetricSample] = []
     @Published var batteryHistory: [MetricSample] = []
+    @Published var batteryPowerHistory: [MetricSample] = []
 
     @Published var refreshInterval: Double {
         didSet {
@@ -34,8 +36,10 @@ final class SystemMonitorStore: ObservableObject {
     @Published var lastError: String?
 
     private let service = SystemMetricsService()
+    private let thresholdAlerts = ThresholdAlertEngine()
     private var fastTask: Task<Void, Never>?
     private var processTask: Task<Void, Never>?
+    private var batteryTask: Task<Void, Never>?
     private var slowTask: Task<Void, Never>?
     private var processDetailTask: Task<Void, Never>?
     private var didLoadHardware = false
@@ -55,6 +59,7 @@ final class SystemMonitorStore: ObservableObject {
     deinit {
         fastTask?.cancel()
         processTask?.cancel()
+        batteryTask?.cancel()
         slowTask?.cancel()
         processDetailTask?.cancel()
     }
@@ -62,6 +67,7 @@ final class SystemMonitorStore: ObservableObject {
     var diagnostics: [TelemetryDiagnostic] {
         let fastStaleAfter = max(5.0, refreshInterval * 3.0)
         let processStaleAfter = max(15.0, refreshInterval * 10.0)
+        let batteryStaleAfter = 15.0
         let slowStaleAfter = 75.0
 
         return [
@@ -75,7 +81,7 @@ final class SystemMonitorStore: ObservableObject {
                 ),
                 detail: lastRefresh == nil
                     ? "Waiting for the first CPU sample"
-                    : "\(DeckFormat.percent(cpuUsage)) utilization · \(sampleAgeText(for: "cpu"))",
+                    : "\(DeckFormat.percent(cpuUsage)) utilization · \(cpuCores.count) logical CPUs · \(sampleAgeText(for: "cpu"))",
                 lastSuccess: collectorLastSuccess["cpu"]
             ),
             TelemetryDiagnostic(
@@ -136,14 +142,8 @@ final class SystemMonitorStore: ObservableObject {
             TelemetryDiagnostic(
                 id: "battery",
                 name: "Battery",
-                state: diagnosticState(
-                    key: "battery",
-                    currentlyAvailable: battery.available,
-                    staleAfter: slowStaleAfter
-                ),
-                detail: battery.available
-                    ? "\(DeckFormat.percent(battery.percentage)) · \(battery.state) · \(sampleAgeText(for: "battery"))"
-                    : "No battery telemetry on this Mac",
+                state: batteryDiagnosticState(staleAfter: batteryStaleAfter),
+                detail: batteryDiagnosticDetail(),
                 lastSuccess: collectorLastSuccess["battery"]
             ),
             TelemetryDiagnostic(
@@ -192,6 +192,14 @@ final class SystemMonitorStore: ObservableObject {
             }
         }
 
+        batteryTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                await self.refreshBatteryMetrics()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+
         slowTask = Task { [weak self] in
             guard let self else { return }
             await self.refreshSlowMetrics()
@@ -205,10 +213,12 @@ final class SystemMonitorStore: ObservableObject {
     func stop() {
         fastTask?.cancel()
         processTask?.cancel()
+        batteryTask?.cancel()
         slowTask?.cancel()
         processDetailTask?.cancel()
         fastTask = nil
         processTask = nil
+        batteryTask = nil
         slowTask = nil
         processDetailTask = nil
         isMonitoring = false
@@ -220,6 +230,7 @@ final class SystemMonitorStore: ObservableObject {
         Task {
             await refreshFastMetrics()
             await refreshProcesses()
+            await refreshBatteryMetrics()
             await refreshSlowMetrics()
         }
     }
@@ -273,6 +284,7 @@ final class SystemMonitorStore: ObservableObject {
         fastKeys.forEach { markCollectorAttempt($0) }
 
         async let cpuTask = service.cpuUsage()
+        async let coreTask = service.perCoreCPUUsage()
         async let gpuTask = service.gpu()
         async let memoryTask = service.memory()
         async let diskTask = service.disk()
@@ -280,6 +292,7 @@ final class SystemMonitorStore: ObservableObject {
         async let thermalTask = service.thermalState()
 
         let cpu = await cpuTask
+        let coreValues = await coreTask
         let gpuValue = await gpuTask
         let mem = await memoryTask
         let diskValue = await diskTask
@@ -288,6 +301,7 @@ final class SystemMonitorStore: ObservableObject {
 
         if cpu.isFinite && cpu >= 0 && cpu <= 100 {
             cpuUsage = cpu
+            cpuCores = coreValues
             markCollectorSuccess("cpu")
         } else {
             markCollectorFailure("cpu")
@@ -332,6 +346,14 @@ final class SystemMonitorStore: ObservableObject {
             MetricMath.appendBounded(value: networkValue.downloadBytesPerSecond, to: &downloadHistory, limit: historyLimit)
             MetricMath.appendBounded(value: networkValue.uploadBytesPerSecond, to: &uploadHistory, limit: historyLimit)
         }
+
+        thresholdAlerts.evaluate(
+            cpuUsage: cpuUsage,
+            memoryPressure: memoryPressure,
+            disk: disk,
+            thermal: thermal,
+            battery: battery
+        )
     }
 
     private func refreshProcesses() async {
@@ -352,20 +374,34 @@ final class SystemMonitorStore: ObservableObject {
         clearIssue(key: "processes")
     }
 
-    private func refreshSlowMetrics() async {
+    private func refreshBatteryMetrics() async {
         markCollectorAttempt("battery")
+
+        let batteryValue = await service.battery()
+        battery = batteryValue
+        updateCollectorAvailability("battery", available: batteryValue.available)
+
+        if batteryValue.available {
+            MetricMath.appendBounded(value: batteryValue.percentage, to: &batteryHistory, limit: historyLimit)
+            if let power = batteryValue.powerWatts {
+                MetricMath.appendBounded(value: power, to: &batteryPowerHistory, limit: historyLimit)
+            }
+        }
+
+        thresholdAlerts.evaluate(
+            cpuUsage: cpuUsage,
+            memoryPressure: memoryPressure,
+            disk: disk,
+            thermal: thermal,
+            battery: battery
+        )
+    }
+
+    private func refreshSlowMetrics() async {
         markCollectorAttempt("pressure")
 
-        async let batteryTask = service.battery()
-        async let pressureTask = service.memoryPressure()
-
-        let batteryValue = await batteryTask
-        let pressureValue = await pressureTask
-
-        battery = batteryValue
+        let pressureValue = await service.memoryPressure()
         memoryPressure = pressureValue
-
-        updateCollectorAvailability("battery", available: batteryValue.available)
         updateCollectorAvailability("pressure", available: pressureValue.available)
 
         if !didLoadHardware {
@@ -374,9 +410,13 @@ final class SystemMonitorStore: ObservableObject {
             SystemDeckLog.telemetry.info("Hardware identity cached")
         }
 
-        if batteryValue.available {
-            MetricMath.appendBounded(value: batteryValue.percentage, to: &batteryHistory, limit: historyLimit)
-        }
+        thresholdAlerts.evaluate(
+            cpuUsage: cpuUsage,
+            memoryPressure: memoryPressure,
+            disk: disk,
+            thermal: thermal,
+            battery: battery
+        )
     }
 
     // MARK: - Collector health metadata
@@ -454,6 +494,27 @@ final class SystemMonitorStore: ObservableObject {
             return .limited
         }
         return .healthy
+    }
+
+    private func batteryDiagnosticState(staleAfter: TimeInterval) -> DiagnosticState {
+        let sourceState = diagnosticState(
+            key: "battery",
+            currentlyAvailable: battery.available,
+            staleAfter: staleAfter
+        )
+        guard sourceState == .healthy else { return sourceState }
+        return (battery.hasElectricalTelemetry || battery.hasHealthTelemetry) ? .healthy : .limited
+    }
+
+    private func batteryDiagnosticDetail() -> String {
+        guard battery.available else { return "No battery telemetry on this Mac" }
+
+        var parts = [DeckFormat.percent(battery.percentage), battery.state]
+        if let voltage = battery.voltageVolts { parts.append(DeckFormat.voltage(voltage)) }
+        if let power = battery.powerWatts { parts.append(DeckFormat.power(power)) }
+        if let cycles = battery.cycleCount { parts.append("\(cycles) cycles") }
+        parts.append(sampleAgeText(for: "battery"))
+        return parts.joined(separator: " · ")
     }
 
     private func thermalDiagnosticState(staleAfter: TimeInterval) -> DiagnosticState {

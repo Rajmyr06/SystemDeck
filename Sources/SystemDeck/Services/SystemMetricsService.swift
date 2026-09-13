@@ -4,8 +4,27 @@ import IOKit
 import SystemConfiguration
 
 actor SystemMetricsService {
+    private struct CoreCPUTicks: Sendable {
+        let user: UInt32
+        let system: UInt32
+        let idle: UInt32
+        let nice: UInt32
+    }
+
+    private struct BatteryPowerDetails: Sendable {
+        var voltageVolts: Double?
+        var currentAmps: Double?
+        var powerWatts: Double?
+        var adapterWatts: Double?
+        var cycleCount: Int?
+        var fullChargeCapacityMah: Int?
+        var designCapacityMah: Int?
+        var healthText: String?
+        var healthPercent: Double?
+    }
     private var cachedTotalMemory: UInt64?
     private var previousCPULoad: host_cpu_load_info_data_t?
+    private var previousCoreLoads: [CoreCPUTicks]?
     private var previousRX: UInt64?
     private var previousTX: UInt64?
     private var previousNetworkDate: Date?
@@ -13,6 +32,7 @@ actor SystemMetricsService {
     // Reset delta baselines after sleep or long sampling gaps.
     func resetSamplingBaselines() {
         previousCPULoad = nil
+        previousCoreLoads = nil
         resetNetworkBaseline()
     }
 
@@ -55,6 +75,65 @@ actor SystemMetricsService {
         guard total > 0 else { return 0 }
 
         return min(100, max(0, Double(busy) / Double(total) * 100))
+    }
+
+    func perCoreCPUUsage() -> [CoreCPUMetric] {
+        var cpuCount: natural_t = 0
+        var cpuInfo: processor_info_array_t?
+        var cpuInfoCount: mach_msg_type_number_t = 0
+
+        let result = host_processor_info(
+            mach_host_self(),
+            PROCESSOR_CPU_LOAD_INFO,
+            &cpuCount,
+            &cpuInfo,
+            &cpuInfoCount
+        )
+
+        guard result == KERN_SUCCESS, let cpuInfo else { return [] }
+        defer {
+            let byteCount = vm_size_t(cpuInfoCount) * vm_size_t(MemoryLayout<integer_t>.stride)
+            vm_deallocate(
+                mach_task_self_,
+                vm_address_t(UInt(bitPattern: cpuInfo)),
+                byteCount
+            )
+        }
+
+        var current: [CoreCPUTicks] = []
+        current.reserveCapacity(Int(cpuCount))
+
+        for cpu in 0..<Int(cpuCount) {
+            let base = cpu * Int(CPU_STATE_MAX)
+            current.append(
+                CoreCPUTicks(
+                    user: UInt32(bitPattern: cpuInfo[base + Int(CPU_STATE_USER)]),
+                    system: UInt32(bitPattern: cpuInfo[base + Int(CPU_STATE_SYSTEM)]),
+                    idle: UInt32(bitPattern: cpuInfo[base + Int(CPU_STATE_IDLE)]),
+                    nice: UInt32(bitPattern: cpuInfo[base + Int(CPU_STATE_NICE)])
+                )
+            )
+        }
+
+        guard let previousCoreLoads, previousCoreLoads.count == current.count else {
+            self.previousCoreLoads = current
+            return current.indices.map { CoreCPUMetric(index: $0, usagePercent: 0) }
+        }
+
+        self.previousCoreLoads = current
+
+        return current.indices.map { index in
+            let now = current[index]
+            let before = previousCoreLoads[index]
+            let user = UInt64(now.user &- before.user)
+            let system = UInt64(now.system &- before.system)
+            let idle = UInt64(now.idle &- before.idle)
+            let nice = UInt64(now.nice &- before.nice)
+            let busy = user + system + nice
+            let total = busy + idle
+            let percent = total > 0 ? Double(busy) / Double(total) * 100 : 0
+            return CoreCPUMetric(index: index, usagePercent: min(100, max(0, percent)))
+        }
     }
 
     // MARK: - Memory
@@ -412,32 +491,171 @@ actor SystemMetricsService {
         )
     }
 
-    // Battery temperature when AppleSmartBattery exposes it.
-    private func batteryTemperatureCelsius() -> Double? {
-        guard let matching = IOServiceMatching("AppleSmartBattery") else {
-            return nil
+    // MARK: - Battery / Hardware / Processes
+
+    private func batteryPowerDetails() async -> BatteryPowerDetails {
+        guard let output = await CommandRunner.run(
+            "/usr/sbin/ioreg",
+            arguments: ["-rn", "AppleSmartBattery", "-a"]
+        ),
+        let data = output.data(using: .utf8),
+        let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+        let entries = plist as? [[String: Any]],
+        let properties = entries.first else {
+            return BatteryPowerDetails()
         }
 
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, matching)
-        guard service != 0 else { return nil }
-        defer { IOObjectRelease(service) }
+        var details = BatteryPowerDetails()
 
-        guard let unmanaged = IORegistryEntryCreateCFProperty(
-            service,
-            "Temperature" as CFString,
-            kCFAllocatorDefault,
-            0
-        ) else {
-            return nil
+        if let millivolts = numericValue(properties["Voltage"]), (1_000...30_000).contains(millivolts) {
+            details.voltageVolts = millivolts / 1_000
         }
 
-        let value = unmanaged.takeRetainedValue()
-        guard let number = value as? NSNumber else { return nil }
+        if let milliamps = signedIntegerValue(properties["Amperage"]), (-100_000...100_000).contains(milliamps) {
+            details.currentAmps = Double(milliamps) / 1_000
+        } else if let milliamps = signedIntegerValue(properties["InstantAmperage"]), (-100_000...100_000).contains(milliamps) {
+            details.currentAmps = Double(milliamps) / 1_000
+        }
 
-        return MetricMath.batteryTemperatureCelsius(rawValue: number.doubleValue)
+        if let voltage = details.voltageVolts, let current = details.currentAmps {
+            details.powerWatts = voltage * abs(current)
+        }
+
+        details.cycleCount = firstRecursivePlausibleInteger(
+            in: properties,
+            keys: ["CycleCount"],
+            range: 0...100_000
+        )
+        details.fullChargeCapacityMah = firstRecursivePlausibleInteger(
+            in: properties,
+            keys: ["AppleRawMaxCapacity", "NominalChargeCapacity"],
+            range: 100...100_000
+        )
+        details.designCapacityMah = firstRecursivePlausibleInteger(
+            in: properties,
+            keys: ["DesignCapacity"],
+            range: 100...100_000
+        )
+
+        details.healthText = firstRecursiveString(
+            in: properties,
+            keys: ["BatteryHealth", "BatteryHealthCondition"]
+        )
+
+        if let full = details.fullChargeCapacityMah,
+           let design = details.designCapacityMah,
+           design > 0 {
+            let percent = Double(full) / Double(design) * 100
+            if percent.isFinite, (0...150).contains(percent) {
+                details.healthPercent = percent
+            }
+        }
+
+        if let adapterDetails = properties["AdapterDetails"] {
+            details.adapterWatts = adapterWattage(from: adapterDetails)
+        }
+
+        return details
     }
 
-    // MARK: - Battery / Hardware / Processes
+    private func adapterWattage(from value: Any) -> Double? {
+        if let dictionary = value as? [String: Any] {
+            if let watts = numericValue(dictionary["Watts"]), (1...500).contains(watts) {
+                return watts
+            }
+            for nested in dictionary.values {
+                if let watts = adapterWattage(from: nested) { return watts }
+            }
+        } else if let array = value as? [Any] {
+            for nested in array {
+                if let watts = adapterWattage(from: nested) { return watts }
+            }
+        }
+        return nil
+    }
+
+    private func numericValue(_ value: Any?) -> Double? {
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let string = value as? String { return Double(string) }
+        return nil
+    }
+
+    private func signedIntegerValue(_ value: Any?) -> Int64? {
+        guard let number = value as? NSNumber else {
+            if let string = value as? String { return Int64(string) }
+            return nil
+        }
+
+        let raw = number.uint64Value
+        if raw > UInt64(Int64.max) {
+            return Int64(bitPattern: raw)
+        }
+        if raw <= UInt64(UInt32.max), raw > UInt64(Int32.max) {
+            return Int64(Int32(bitPattern: UInt32(raw)))
+        }
+        return number.int64Value
+    }
+
+    private func plausibleInteger(_ value: Any?, range: ClosedRange<Int>) -> Int? {
+        guard let number = value as? NSNumber else {
+            if let string = value as? String, let integer = Int(string), range.contains(integer) {
+                return integer
+            }
+            return nil
+        }
+        let integer = number.intValue
+        return range.contains(integer) ? integer : nil
+    }
+
+    private func firstRecursivePlausibleInteger(
+        in value: Any,
+        keys: [String],
+        range: ClosedRange<Int>
+    ) -> Int? {
+        if let dictionary = value as? [String: Any] {
+            for key in keys {
+                if let integer = plausibleInteger(dictionary[key], range: range) {
+                    return integer
+                }
+            }
+
+            for nested in dictionary.values {
+                if let integer = firstRecursivePlausibleInteger(in: nested, keys: keys, range: range) {
+                    return integer
+                }
+            }
+        } else if let array = value as? [Any] {
+            for nested in array {
+                if let integer = firstRecursivePlausibleInteger(in: nested, keys: keys, range: range) {
+                    return integer
+                }
+            }
+        }
+        return nil
+    }
+
+    private func firstRecursiveString(in value: Any, keys: [String]) -> String? {
+        if let dictionary = value as? [String: Any] {
+            for key in keys {
+                if let string = dictionary[key] as? String, !string.isEmpty {
+                    return string
+                }
+            }
+
+            for nested in dictionary.values {
+                if let string = firstRecursiveString(in: nested, keys: keys) {
+                    return string
+                }
+            }
+        } else if let array = value as? [Any] {
+            for nested in array {
+                if let string = firstRecursiveString(in: nested, keys: keys) {
+                    return string
+                }
+            }
+        }
+        return nil
+    }
 
     func battery() async -> BatteryMetric {
         guard let output = await CommandRunner.run("/usr/bin/pmset", arguments: ["-g", "batt"]) else {
@@ -467,7 +685,7 @@ actor SystemMetricsService {
             remaining = time
         }
 
-        let batteryTemperature = batteryTemperatureCelsius()
+        let powerDetails = await batteryPowerDetails()
 
         return BatteryMetric(
             available: true,
@@ -475,8 +693,15 @@ actor SystemMetricsService {
             state: state,
             timeRemaining: remaining,
             onACPower: onAC,
-            temperatureAvailable: batteryTemperature != nil,
-            temperatureCelsius: batteryTemperature ?? 0
+            voltageVolts: powerDetails.voltageVolts,
+            currentAmps: powerDetails.currentAmps,
+            powerWatts: powerDetails.powerWatts,
+            adapterWatts: powerDetails.adapterWatts,
+            cycleCount: powerDetails.cycleCount,
+            fullChargeCapacityMah: powerDetails.fullChargeCapacityMah,
+            designCapacityMah: powerDetails.designCapacityMah,
+            healthText: powerDetails.healthText,
+            healthPercent: powerDetails.healthPercent
         )
     }
 

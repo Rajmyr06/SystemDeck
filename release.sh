@@ -15,6 +15,9 @@ done
 ./validate.sh
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Packaging/Info.plist)"
+BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Packaging/Info.plist)"
+[[ "$VERSION" == "1.1.0" ]] || { echo "error: expected release version 1.1.0, got $VERSION" >&2; exit 1; }
+[[ "$BUILD" == "110" ]] || { echo "error: expected build 110, got $BUILD" >&2; exit 1; }
 DIST="$PWD/dist"
 APP="$DIST/SystemDeck.app"
 ZIP="$DIST/SystemDeck-$VERSION-macOS.zip"

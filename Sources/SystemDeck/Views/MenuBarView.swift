@@ -110,8 +110,10 @@ struct MenuBarView: View {
 
     private var batteryMenuValue: String {
         let level = DeckFormat.percent(store.battery.percentage)
-        guard store.battery.temperatureAvailable else { return level }
-        return "\(level) · \(DeckFormat.temperatureCelsius(store.battery.temperatureCelsius))"
+        if let power = store.battery.powerWatts {
+            return "\(level) · \(DeckFormat.power(power))"
+        }
+        return level
     }
 
     private var thermalSymbol: String {

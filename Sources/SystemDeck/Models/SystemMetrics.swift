@@ -135,8 +135,23 @@ struct BatteryMetric: Sendable {
     var state: String = "Unavailable"
     var timeRemaining: String = "—"
     var onACPower = false
-    var temperatureAvailable = false
-    var temperatureCelsius: Double = 0
+    var voltageVolts: Double?
+    var currentAmps: Double?
+    var powerWatts: Double?
+    var adapterWatts: Double?
+    var cycleCount: Int?
+    var fullChargeCapacityMah: Int?
+    var designCapacityMah: Int?
+    var healthText: String?
+    var healthPercent: Double?
+
+    var hasElectricalTelemetry: Bool {
+        voltageVolts != nil || currentAmps != nil || powerWatts != nil || adapterWatts != nil
+    }
+
+    var hasHealthTelemetry: Bool {
+        cycleCount != nil || fullChargeCapacityMah != nil || designCapacityMah != nil || healthText != nil || healthPercent != nil
+    }
 }
 
 struct HardwareInfo: Sendable {

@@ -1,11 +1,29 @@
 import SwiftUI
+import AppKit
+import UserNotifications
 
 @MainActor
 struct SettingsView: View {
     @ObservedObject var store: SystemMonitorStore
     var embedded: Bool = false
     @AppStorage("glassIntensity") private var glassIntensity = 0.28
+
+    @AppStorage("menuBarMetric.cpu") private var menuCPU = true
+    @AppStorage("menuBarMetric.gpu") private var menuGPU = false
+    @AppStorage("menuBarMetric.memory") private var menuMemory = false
+    @AppStorage("menuBarMetric.network") private var menuNetwork = false
+    @AppStorage("menuBarMetric.battery") private var menuBattery = false
+    @AppStorage("menuBarMetric.thermal") private var menuThermal = false
+
+    @AppStorage("thresholdAlerts.enabled") private var thresholdAlertsEnabled = false
+    @AppStorage("thresholdAlert.cpu.enabled") private var cpuAlertEnabled = true
+    @AppStorage("thresholdAlert.memory.enabled") private var memoryAlertEnabled = true
+    @AppStorage("thresholdAlert.storage.enabled") private var storageAlertEnabled = true
+    @AppStorage("thresholdAlert.thermal.enabled") private var thermalAlertEnabled = true
+    @AppStorage("thresholdAlert.battery.enabled") private var batteryAlertEnabled = true
+
     @ObservedObject private var launchAtLogin = LaunchAtLoginManager.shared
+    @ObservedObject private var notifications = NotificationAuthorizationManager.shared
 
     var body: some View {
         ZStack {
@@ -152,6 +170,89 @@ struct SettingsView: View {
                         }
                     }
 
+                    settingsSection(title: "Menu Bar Live Strip", tint: DeckTheme.cyan) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Show up to three live values directly in the macOS menu bar. Click the strip to open SystemDeck's quick telemetry panel.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(DeckTheme.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            HStack(spacing: 10) {
+                                Text("Preview")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(DeckTheme.mutedText)
+                                Text(menuBarPreview)
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(DeckTheme.primaryText)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(DeckTheme.dataSurface.opacity(0.72))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                            menuBarToggle("CPU", isOn: $menuCPU)
+                            menuBarToggle("GPU", isOn: $menuGPU)
+                            menuBarToggle("Memory", isOn: $menuMemory)
+                            menuBarToggle("Network", isOn: $menuNetwork)
+                            menuBarToggle("Battery", isOn: $menuBattery)
+                            menuBarToggle("Thermal", isOn: $menuThermal)
+                        }
+                    }
+
+                    settingsSection(title: "Notifications", tint: DeckTheme.statusElevated) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Toggle(
+                                "Threshold alerts",
+                                isOn: Binding(
+                                    get: { thresholdAlertsEnabled },
+                                    set: { enabled in
+                                        thresholdAlertsEnabled = enabled
+                                        if enabled { notifications.requestAuthorization() }
+                                    }
+                                )
+                            )
+                            .toggleStyle(.switch)
+                            .tint(DeckTheme.statusElevated)
+                            .disabled(!notifications.isPackagedApp)
+
+                            HStack {
+                                Text("Permission")
+                                    .foregroundStyle(DeckTheme.secondaryText)
+                                Spacer()
+                                Text(notifications.statusLabel)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(notifications.canDeliver ? DeckTheme.statusNormal : DeckTheme.secondaryText)
+                            }
+
+                            if notifications.status == .denied {
+                                Button("Open Notification Settings") {
+                                    notifications.openNotificationSettings()
+                                }
+                                .buttonStyle(DeckFilledButtonStyle(tint: DeckTheme.statusElevated))
+                            }
+
+                            if let error = notifications.lastError {
+                                Text(error)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(DeckTheme.statusElevated)
+                            }
+
+                            DeckDivider()
+
+                            alertToggle("CPU", detail: "> 90% for 30 seconds", isOn: $cpuAlertEnabled)
+                            alertToggle("Memory", detail: "High or critical memory pressure", isOn: $memoryAlertEnabled)
+                            alertToggle("Storage", detail: "> 90% used", isOn: $storageAlertEnabled)
+                            alertToggle("Thermal", detail: "High or critical thermal pressure", isOn: $thermalAlertEnabled)
+                            alertToggle("Battery", detail: "Below 20% while on battery", isOn: $batteryAlertEnabled)
+
+                            Text("Alerts use a 10-minute cooldown and reset after the condition recovers.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(DeckTheme.mutedText)
+                        }
+                    }
+
                     settingsSection(title: "Diagnostics", tint: DeckTheme.aqua) {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Collector health, sample freshness, and the latest useful reading.")
@@ -206,7 +307,7 @@ struct SettingsView: View {
 
                     settingsSection(title: "Energy & Safety", tint: DeckTheme.aqua) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Fast telemetry follows the selected refresh interval. Process data refreshes at least every 5 seconds, while battery data refreshes every 30 seconds to keep background work low.")
+                            Text("Fast telemetry follows the selected refresh interval. Process snapshots refresh at least every 5 seconds. Battery state and electrical telemetry refresh every 5 seconds, while slower system-pressure data refreshes every 30 seconds.")
                                 .font(.system(size: 11))
                                 .foregroundStyle(DeckTheme.secondaryText)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -221,7 +322,13 @@ struct SettingsView: View {
             }
         }
         .frame(minWidth: embedded ? 0 : 590, minHeight: embedded ? 0 : 560)
-        .onAppear { launchAtLogin.refresh() }
+        .onAppear {
+            launchAtLogin.refresh()
+            notifications.refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            notifications.refresh()
+        }
         .preferredColorScheme(.dark)
     }
 
@@ -238,6 +345,60 @@ struct SettingsView: View {
                 content()
             }
         }
+    }
+
+    private var selectedMenuBarMetricCount: Int {
+        [menuCPU, menuGPU, menuMemory, menuNetwork, menuBattery, menuThermal]
+            .filter { $0 }
+            .count
+    }
+
+    private var menuBarPreview: String {
+        var parts: [String] = []
+        if menuCPU { parts.append("CPU \(DeckFormat.percent(store.cpuUsage))") }
+        if menuGPU, store.gpu.available { parts.append("GPU \(DeckFormat.percent(store.gpu.utilizationPercent))") }
+        if menuMemory { parts.append("RAM \(DeckFormat.percent(store.memory.usagePercent))") }
+        if menuNetwork, store.network.available { parts.append("↓\(previewRate(store.network.downloadBytesPerSecond)) ↑\(previewRate(store.network.uploadBytesPerSecond))") }
+        if menuBattery, store.battery.available { parts.append("BAT \(DeckFormat.percent(store.battery.percentage))") }
+        if menuThermal, store.thermal.available { parts.append("THERM \(store.thermal.displayName)") }
+        return parts.isEmpty ? "SystemDeck" : Array(parts.prefix(3)).joined(separator: " · ")
+    }
+
+    private func previewRate(_ value: Double) -> String {
+        guard value.isFinite, value >= 0 else { return "0" }
+        if value >= 1_000_000_000 { return String(format: "%.1fG", value / 1_000_000_000) }
+        if value >= 1_000_000 { return String(format: "%.1fM", value / 1_000_000) }
+        if value >= 1_000 { return String(format: "%.0fK", value / 1_000) }
+        return String(format: "%.0fB", value)
+    }
+
+    @ViewBuilder
+    private func menuBarToggle(_ title: String, isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn)
+            .toggleStyle(.switch)
+            .tint(DeckTheme.cyan)
+            .disabled(!isOn.wrappedValue && selectedMenuBarMetricCount >= 3)
+    }
+
+    @ViewBuilder
+    private func alertToggle(_ title: String, detail: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(DeckTheme.primaryText)
+                Text(detail)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(DeckTheme.mutedText)
+            }
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(DeckTheme.statusElevated)
+                .disabled(!thresholdAlertsEnabled)
+        }
+        .opacity(thresholdAlertsEnabled ? 1 : 0.58)
     }
 
     private func diagnosticTint(_ state: DiagnosticState) -> Color {

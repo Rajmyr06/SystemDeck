@@ -41,6 +41,8 @@ struct PerformanceView: View {
                     )
                     .frame(minHeight: 300)
 
+                    CoreCPUGrid(cores: store.cpuCores)
+
                     LazyVGrid(
                         columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)],
                         spacing: 16
@@ -110,7 +112,7 @@ struct PerformanceView: View {
                 PerformanceDivider()
                 PerformanceDatum(label: "Peak upload", value: DeckFormat.rate(uploadPeak))
                 PerformanceDivider()
-                PerformanceDatum(label: "History", value: DeckFormat.durationCompact(store.historyWindow(of: store.cpuHistory)))
+                PerformanceDatum(label: "Range", value: DeckFormat.historyRange(store.historyWindow(of: store.cpuHistory)))
             }
         }
     }

@@ -20,9 +20,16 @@ final class DeckFormatTests: XCTestCase {
         XCTAssertEqual(DeckFormat.percent(110), "100%")
     }
 
-    func testTemperatureFormatting() {
-        XCTAssertEqual(DeckFormat.temperatureCelsius(31.25), "31.2 °C")
-        XCTAssertEqual(DeckFormat.temperatureCelsius(.infinity), "N/A")
+    func testHistoryRangeFormatting() {
+        XCTAssertEqual(DeckFormat.historyRange(45), "Last 45 sec")
+        XCTAssertEqual(DeckFormat.historyRange(120), "Last 2 min")
+        XCTAssertEqual(DeckFormat.historyRange(240), "Last 4 min")
+    }
+
+    func testPowerFormatting() {
+        XCTAssertEqual(DeckFormat.voltage(12.418), "12.42 V")
+        XCTAssertEqual(DeckFormat.current(-1.82), "1.82 A")
+        XCTAssertEqual(DeckFormat.power(22.64), "22.6 W")
     }
 
     func testDurationCompact() {

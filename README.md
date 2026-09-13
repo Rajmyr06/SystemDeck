@@ -9,9 +9,13 @@ SystemDeck is a native macOS system monitor built with SwiftUI and AppKit. It sh
 - GPU telemetry through IOKit when available
 - Storage capacity monitoring
 - Network throughput from BSD interface counters
-- Battery state and macOS thermal condition
+- Battery state, electrical telemetry, health, and macOS thermal condition
 - Read-only process monitoring with normalized CPU usage
 - Rolling charts with bounded history
+- Per-core CPU activity
+- Customizable menu bar metrics
+- Optional local threshold notifications
+- Live battery electrical telemetry with 5-second refresh
 - Menu bar monitor and compact monitor
 - Collector health and freshness diagnostics
 - Native full screen and fit-to-screen window controls
@@ -54,12 +58,14 @@ Artifacts are created in `dist/`:
 
 ```text
 SystemDeck.app
-SystemDeck-1.0.0-macOS.zip
-SystemDeck-1.0.0-macOS.dmg
+SystemDeck-1.1.0-macOS.zip
+SystemDeck-1.1.0-macOS.dmg
 SHA256SUMS.txt
 ```
 
 The release build is ad-hoc signed. If macOS blocks the first launch on another Mac, open **System Settings → Privacy & Security** and choose **Open Anyway**.
+
+Threshold notifications use macOS local notifications and are available from the packaged `SystemDeck.app`. Hardware-dependent power fields are shown only when macOS exposes them.
 
 ## Project layout
 

@@ -12,7 +12,7 @@ struct NetworkView: View {
     }
 
     private var historyWindow: String {
-        DeckFormat.durationCompact(
+        DeckFormat.historyRange(
             max(
                 store.historyWindow(of: store.downloadHistory),
                 store.historyWindow(of: store.uploadHistory)
@@ -62,7 +62,7 @@ struct NetworkView: View {
                         )
                         GlassDivider()
                         NetworkStat(
-                            title: "History",
+                            title: "Range",
                             value: historyWindow,
                             tint: DeckTheme.violet,
                             help: "Elapsed time covered by the currently retained samples. The store keeps up to 120 samples."

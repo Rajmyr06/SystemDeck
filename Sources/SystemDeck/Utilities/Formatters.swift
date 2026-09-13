@@ -23,9 +23,41 @@ enum DeckFormat {
         String(format: "%.0f%%", min(100, max(0, value)))
     }
 
-    static func temperatureCelsius(_ value: Double) -> String {
-        guard value.isFinite else { return "N/A" }
-        return String(format: "%.1f °C", value)
+
+    static func voltage(_ volts: Double) -> String {
+        guard volts.isFinite else { return "N/A" }
+        return String(format: "%.2f V", volts)
+    }
+
+    static func current(_ amps: Double) -> String {
+        guard amps.isFinite else { return "N/A" }
+        return String(format: "%.2f A", abs(amps))
+    }
+
+    static func power(_ watts: Double) -> String {
+        guard watts.isFinite, watts >= 0 else { return "N/A" }
+        return watts >= 100 ? String(format: "%.0f W", watts) : String(format: "%.1f W", watts)
+    }
+
+    static func capacityMah(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return "\(formatter.string(from: NSNumber(value: value)) ?? String(value)) mAh"
+    }
+
+    static func historyRange(_ interval: TimeInterval) -> String {
+        let seconds = max(0, Int(interval.rounded()))
+        if seconds >= 3_600 {
+            let hours = seconds / 3_600
+            let minutes = (seconds % 3_600) / 60
+            return minutes > 0 ? "Last \(hours)h \(minutes)m" : "Last \(hours)h"
+        }
+        if seconds >= 60 {
+            let minutes = max(1, Int((Double(seconds) / 60).rounded()))
+            return "Last \(minutes) min"
+        }
+        return "Last \(seconds) sec"
     }
 
     static func durationCompact(_ interval: TimeInterval) -> String {

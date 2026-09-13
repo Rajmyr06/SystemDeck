@@ -7,31 +7,6 @@ enum MetricMath {
         return min(100, max(0, coreUsagePercent) / Double(count))
     }
 
-    // AppleSmartBattery has used several temperature encodings across hardware.
-    static func batteryTemperatureCelsius(rawValue: Double) -> Double? {
-        guard rawValue.isFinite, rawValue > 0 else { return nil }
-
-        let candidates: [Double]
-        switch rawValue {
-        case 20_000...40_000:
-            // centi-Kelvin, e.g. 30315 -> 30 C
-            candidates = [rawValue / 100.0 - 273.15]
-        case 2_000...4_000:
-            // deci-Kelvin, e.g. 3031 -> 30 C
-            candidates = [rawValue / 10.0 - 273.15]
-        case 250...400:
-            // Kelvin, e.g. 303 -> 30 C
-            candidates = [rawValue - 273.15]
-        case -20...100:
-            // Celsius
-            candidates = [rawValue]
-        default:
-            candidates = []
-        }
-
-        return candidates.first { (-20...100).contains($0) }
-    }
-
     static func appendBounded(
         value: Double,
         timestamp: Date = Date(),

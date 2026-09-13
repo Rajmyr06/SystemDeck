@@ -72,18 +72,8 @@ struct CompactView: View {
                 CompactNetworkItem(
                     symbol: store.battery.onACPower ? "bolt.fill" : "battery.75percent",
                     label: "Battery",
-                    value: DeckFormat.percent(store.battery.percentage),
+                    value: batteryCompactValue,
                     tint: DeckTheme.statusNormal
-                )
-            }
-
-            if store.battery.temperatureAvailable {
-                Spacer(minLength: 20)
-                CompactNetworkItem(
-                    symbol: "thermometer.medium",
-                    label: "Battery temp",
-                    value: DeckFormat.temperatureCelsius(store.battery.temperatureCelsius),
-                    tint: DeckTheme.statusElevated
                 )
             }
 
@@ -97,6 +87,14 @@ struct CompactView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 56)
+    }
+
+    private var batteryCompactValue: String {
+        let level = DeckFormat.percent(store.battery.percentage)
+        if let power = store.battery.powerWatts {
+            return "\(level) · \(DeckFormat.power(power))"
+        }
+        return level
     }
 
     private var thermalSymbol: String {

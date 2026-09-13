@@ -31,6 +31,15 @@ struct OverviewView: View {
         )
     }
 
+    private var powerSummary: String {
+        guard store.battery.available else { return "N/A" }
+        var parts = [DeckFormat.percent(store.battery.percentage), store.battery.state]
+        if let power = store.battery.powerWatts {
+            parts.append(DeckFormat.power(power))
+        }
+        return parts.joined(separator: " · ")
+    }
+
     private func topProcesses(limit: Int) -> [ProcessMetric] {
         Array(
             store.processes
@@ -203,8 +212,8 @@ struct OverviewView: View {
                     HeroDatum(label: "Sample", value: String(format: "%.0fs", store.refreshInterval))
                     RailDivider(height: 32)
                     HeroDatum(
-                        label: "History",
-                        value: DeckFormat.durationCompact(store.historyWindow(of: store.cpuHistory))
+                        label: "Range",
+                        value: DeckFormat.historyRange(store.historyWindow(of: store.cpuHistory))
                     )
                     Spacer(minLength: 0)
                 }
@@ -253,12 +262,7 @@ struct OverviewView: View {
                 MachineRow(label: "macOS", value: store.hardware.macOSVersion)
                 MachineRow(label: "Uptime", value: DeckFormat.uptime(ProcessInfo.processInfo.systemUptime))
                 MachineRow(label: "Network", value: store.network.available ? store.network.interface : "N/A")
-                MachineRow(
-                    label: "Power",
-                    value: store.battery.available
-                        ? "\(DeckFormat.percent(store.battery.percentage)) · \(store.battery.state)"
-                        : "N/A"
-                )
+                MachineRow(label: "Power", value: powerSummary)
                 MachineRow(
                     label: "Thermal",
                     value: thermalSummary

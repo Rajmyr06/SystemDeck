@@ -56,13 +56,6 @@ struct HardwareView: View {
         }
     }
 
-    private var batteryTemperatureTint: Color {
-        let value = store.battery.temperatureCelsius
-        if value >= 45 { return DeckTheme.statusHigh }
-        if value >= 38 { return DeckTheme.statusElevated }
-        return DeckTheme.statusNormal
-    }
-
     private var detailsCard: some View {
         DataSurface(padding: 18, tint: DeckTheme.accent) {
             VStack(spacing: 0) {
@@ -76,17 +69,8 @@ struct HardwareView: View {
                     label: "Thermal condition",
                     value: store.thermal.available ? store.thermal.compactSummary : "N/A",
                     tint: thermalTint,
-                    showDivider: store.battery.temperatureAvailable || store.gpu.available
+                    showDivider: store.gpu.available
                 )
-
-                if store.battery.temperatureAvailable {
-                    HardwareRow(
-                        label: "Battery temperature",
-                        value: DeckFormat.temperatureCelsius(store.battery.temperatureCelsius),
-                        tint: batteryTemperatureTint,
-                        showDivider: store.gpu.available
-                    )
-                }
 
                 if store.gpu.available {
                     HardwareRow(label: "GPU", value: store.gpu.model, tint: DeckTheme.cyan)

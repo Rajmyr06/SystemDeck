@@ -10,6 +10,7 @@ struct SystemDeckApp: App {
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+        _ = NotificationAuthorizationManager.shared
 
         let store = SystemMonitorStore()
         _store = StateObject(wrappedValue: store)
@@ -42,10 +43,7 @@ struct SystemDeckApp: App {
         MenuBarExtra {
             MenuBarView(store: store)
         } label: {
-            Label(
-                "CPU \(Int(store.cpuUsage.rounded()))%",
-                systemImage: "waveform.path.ecg"
-            )
+            MenuBarLabelView(store: store)
         }
         .menuBarExtraStyle(.window)
 

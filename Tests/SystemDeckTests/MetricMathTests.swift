@@ -26,23 +26,6 @@ final class MetricMathTests: XCTestCase {
         )
     }
 
-    func testBatteryTemperatureConversionSupportsCommonEncodings() throws {
-        let deciKelvin = try XCTUnwrap(MetricMath.batteryTemperatureCelsius(rawValue: 3031))
-        let kelvin = try XCTUnwrap(MetricMath.batteryTemperatureCelsius(rawValue: 303.15))
-        let centiKelvin = try XCTUnwrap(MetricMath.batteryTemperatureCelsius(rawValue: 30315))
-        let celsius = try XCTUnwrap(MetricMath.batteryTemperatureCelsius(rawValue: 32))
-
-        XCTAssertEqual(deciKelvin, 29.95, accuracy: 0.05)
-        XCTAssertEqual(kelvin, 30.0, accuracy: 0.05)
-        XCTAssertEqual(centiKelvin, 30.0, accuracy: 0.05)
-        XCTAssertEqual(celsius, 32.0, accuracy: 0.05)
-    }
-
-    func testBatteryTemperatureRejectsImplausibleValues() {
-        XCTAssertNil(MetricMath.batteryTemperatureCelsius(rawValue: 1_000_000))
-        XCTAssertNil(MetricMath.batteryTemperatureCelsius(rawValue: -200))
-    }
-
     func testBoundedHistoryRetainsNewestSamples() {
         var history: [MetricSample] = []
         for value in 0..<6 {
